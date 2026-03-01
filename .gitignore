@@ -1,0 +1,23 @@
+# Environment variables — never commit these
+backend/.env
+backend/service_account.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Generated files
+backend/sample_quote.pdf
+
+# Cloudflared binary
+cloudflared.exe
+
+# OS
+.DS_Store
+Thumbs.db
