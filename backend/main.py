@@ -6,6 +6,7 @@ Entry point. Run with:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import sys
@@ -23,6 +24,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 from routes.health import router as health_router
 from routes.tools import router as tools_router
+from keepalive import start_keepalive
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 logging.basicConfig(
@@ -75,6 +77,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 # ── Startup / shutdown events ─────────────────────────────────────────────────
 @app.on_event("startup")
 async def on_startup() -> None:
+    asyncio.create_task(start_keepalive())
     base_url = os.getenv("BASE_URL", "http://localhost:8000")
     from_email = os.getenv("SENDGRID_FROM_EMAIL", "(not set)")
     logger.info("=" * 60)

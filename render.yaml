@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: cleannest-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: GMAIL_USER
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false
+      - key: COMPANY_NAME
+        value: CleanAI
+      - key: COMPANY_PHONE
+        value: "(530) 508-3355"
+      - key: COMPANY_EMAIL
+        sync: false
+      - key: COMPANY_WEBSITE
+        value: www.cleanai.com
+      - key: COMPANY_ADDRESS
+        value: "Chico, CA"
+      - key: BASE_URL
+        sync: false
