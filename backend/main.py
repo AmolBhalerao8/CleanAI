@@ -79,11 +79,11 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 async def on_startup() -> None:
     asyncio.create_task(start_keepalive())
     base_url = os.getenv("BASE_URL", "http://localhost:8000")
-    from_email = os.getenv("SENDGRID_FROM_EMAIL", "(not set)")
+    gmail_user = os.getenv("GMAIL_USER", "(not set)")
     logger.info("=" * 60)
-    logger.info("Cleannest AI Receptionist backend starting up")
+    logger.info("CleanAI Receptionist backend starting up")
     logger.info("  BASE_URL      : %s", base_url)
-    logger.info("  SENDGRID_FROM : %s", from_email)
+    logger.info("  GMAIL_USER    : %s", gmail_user)
     logger.info("  Tool endpoint : POST %s/tools/send_quote_and_slots", base_url)
     logger.info("=" * 60)
 

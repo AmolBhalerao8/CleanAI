@@ -1,16 +1,33 @@
 """
 Pydantic schemas for the Vapi tool webhook endpoint.
 
-Only one custom endpoint remains:
-  POST /tools/send_quote_and_slots
+Vapi wraps every function tool call in a message envelope:
+  {
+    "message": {
+      "type": "tool-calls",
+      "toolCallList": [
+        {
+          "id": "call_abc",
+          "type": "function",
+          "function": {
+            "name": "send_quote_and_slots",
+            "arguments": { ...our actual params... }
+          }
+        }
+      ]
+    }
+  }
 
-Calendar availability checking and event creation are handled
-natively by Vapi's built-in Google Calendar tools
-(google.calendar.availability.check and google.calendar.event.create).
-The agent passes the slots it already retrieved from the native tool
-into this endpoint so they can be included in the PDF and email.
+Our endpoint unpacks this envelope, runs the logic, then returns
+in the format Vapi expects:
+  {
+    "results": [
+      { "toolCallId": "call_abc", "result": "..." }
+    ]
+  }
 """
 from __future__ import annotations
+from typing import Any
 from pydantic import BaseModel
 
 from models.lead import Lead
@@ -18,27 +35,56 @@ from models.service_info import ServiceInfo
 from models.quote import Quote, TimeSlot, PreferredWindow
 
 
-# ── Inbound request payload from Vapi ────────────────────────────────────────
+# ── Inner arguments (what the agent passes) ──────────────────────────────────
 
-class SendQuoteRequest(BaseModel):
+class SendQuoteArgs(BaseModel):
     lead: Lead
     service: ServiceInfo
     preferredWindow: PreferredWindow
     durationMinutes: int | None = None
-    # Quote is optional: if omitted the pricing engine calculates it server-side
     quote: Quote | None = None
-    # Slots already retrieved by Vapi's native checkAvailability tool
     availableSlots: list[TimeSlot] | None = None
-    # Included only on the second call, after Vapi's createEvent tool succeeds
     bookedSlot: TimeSlot | None = None
 
 
-# ── Outbound response payload returned to Vapi ───────────────────────────────
+# ── Vapi webhook envelope models ─────────────────────────────────────────────
 
-class SendQuoteResponse(BaseModel):
-    ok: bool
-    quoteTotal: float | None = None
-    quoteCurrency: str | None = None
-    emailedTo: str | None = None
-    error: str | None = None
-    errorCode: str | None = None
+class VapiFunctionCall(BaseModel):
+    name: str
+    arguments: dict[str, Any]
+
+
+class VapiToolCall(BaseModel):
+    id: str
+    type: str = "function"
+    function: VapiFunctionCall
+
+
+class VapiMessage(BaseModel):
+    type: str
+    toolCallList: list[VapiToolCall] | None = None
+    # Vapi also sends call metadata here; we only need what's above
+    model_config = {"extra": "allow"}
+
+
+class VapiWebhookPayload(BaseModel):
+    message: VapiMessage
+    model_config = {"extra": "allow"}
+
+
+# ── Vapi response format ──────────────────────────────────────────────────────
+
+class ToolCallResult(BaseModel):
+    toolCallId: str
+    result: str
+
+
+class VapiToolResponse(BaseModel):
+    results: list[ToolCallResult]
+
+
+# ── Legacy direct-call schema (used for local testing via curl/Postman) ───────
+
+class SendQuoteRequest(SendQuoteArgs):
+    """Flat schema used when calling the endpoint directly (not via Vapi)."""
+    pass
