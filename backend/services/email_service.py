@@ -1,34 +1,36 @@
 """
-Gmail SMTP email service for Cleannest.
+Email service for CleanAI using Resend (HTTP API).
 
-Sends a branded HTML email with the quote PDF attached.
-Uses Gmail with an App Password (no SendGrid account needed).
+Render's free tier blocks outbound SMTP (port 465/587), so Gmail SMTP
+cannot be used. Resend sends via HTTP and works on all hosting platforms.
+
+Free tier: 100 emails/day — plenty for a booking assistant.
+Sign up at https://resend.com — takes about 2 minutes.
 """
 from __future__ import annotations
 
+import base64
 import logging
 import os
-import smtplib
 from datetime import datetime
-from email.mime.application import MIMEApplication
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 
 import pytz
+import resend
 
 from models.lead import Lead
 from models.quote import Quote, TimeSlot
 
 logger = logging.getLogger(__name__)
 
-COMPANY_NAME = os.getenv("COMPANY_NAME", "Cleannest")
+COMPANY_NAME = os.getenv("COMPANY_NAME", "CleanAI")
 COMPANY_PHONE = os.getenv("COMPANY_PHONE", "(530) 555-0100")
-COMPANY_EMAIL = os.getenv("COMPANY_EMAIL", "hello@cleannest.com")
-COMPANY_WEBSITE = os.getenv("COMPANY_WEBSITE", "www.cleannest.com")
+COMPANY_EMAIL = os.getenv("COMPANY_EMAIL", "hello@cleanai.com")
+COMPANY_WEBSITE = os.getenv("COMPANY_WEBSITE", "www.cleanai.com")
 
-GMAIL_USER = os.getenv("GMAIL_USER", "")
-GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
-FROM_NAME = os.getenv("COMPANY_NAME", "Cleannest")
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
+# FROM_EMAIL: use your verified Resend domain address, or the
+# Resend test address "onboarding@resend.dev" while testing.
+FROM_EMAIL = os.getenv("FROM_EMAIL", "onboarding@resend.dev")
 
 
 def _fmt_slot_human(slot: TimeSlot) -> str:
@@ -161,43 +163,44 @@ def send_quote_email(
     booked_slot: TimeSlot | None = None,
 ) -> None:
     """
-    Send a quote email with attached PDF via Gmail SMTP.
+    Send a quote email with attached PDF via Resend (HTTP API).
 
     Raises:
         ValueError: If no email address is present on the lead.
-        RuntimeError: If the Gmail credentials are missing or SMTP fails.
+        RuntimeError: If RESEND_API_KEY is missing or the send fails.
     """
     if not lead.email:
         raise ValueError("Cannot send email: no email address on lead.")
 
-    if not GMAIL_USER or not GMAIL_APP_PASSWORD:
-        raise RuntimeError("GMAIL_USER or GMAIL_APP_PASSWORD is not set in .env")
+    if not RESEND_API_KEY:
+        raise RuntimeError(
+            "RESEND_API_KEY is not set. Get a free key at https://resend.com"
+        )
+
+    resend.api_key = RESEND_API_KEY
 
     subject = _build_subject(lead, booked_slot)
     html_content = _build_html(lead, quote, available_slots, booked_slot)
 
-    msg = MIMEMultipart("mixed")
-    msg["Subject"] = subject
-    msg["From"] = f"{FROM_NAME} <{GMAIL_USER}>"
-    msg["To"] = lead.email
+    # Resend expects attachment content as a base64-encoded string
+    pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
 
-    msg.attach(MIMEText(html_content, "html"))
-
-    pdf_attachment = MIMEApplication(pdf_bytes, _subtype="pdf")
-    pdf_attachment.add_header(
-        "Content-Disposition", "attachment", filename="cleannest_quote.pdf"
-    )
-    msg.attach(pdf_attachment)
+    params: resend.Emails.SendParams = {
+        "from": f"{COMPANY_NAME} <{FROM_EMAIL}>",
+        "to": [lead.email],
+        "subject": subject,
+        "html": html_content,
+        "attachments": [
+            {
+                "filename": "cleanai_quote.pdf",
+                "content": pdf_b64,
+            }
+        ],
+    }
 
     try:
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
-            server.sendmail(GMAIL_USER, lead.email, msg.as_string())
-        logger.info("Quote email sent to %s", lead.email)
-    except smtplib.SMTPAuthenticationError:
-        raise RuntimeError(
-            "Gmail authentication failed. Check GMAIL_USER and GMAIL_APP_PASSWORD in .env"
-        )
+        response = resend.Emails.send(params)
+        logger.info("Quote email sent via Resend — id=%s to=%s", response.get("id"), lead.email)
     except Exception as exc:
-        logger.error("Gmail SMTP error: %s", exc)
+        logger.error("Resend error: %s", exc)
         raise RuntimeError(f"Failed to send email: {exc}") from exc
