@@ -1,11 +1,17 @@
 """
-Email service for CleanAI using Resend (HTTP API).
+Email service for CleanAI using the Gmail API (HTTP-based OAuth).
 
-Render's free tier blocks outbound SMTP (port 465/587), so Gmail SMTP
-cannot be used. Resend sends via HTTP and works on all hosting platforms.
+Gmail SMTP (port 465/587) is blocked on Render's free tier.
+The Gmail API sends over HTTPS (port 443) — no restrictions.
 
-Free tier: 100 emails/day — plenty for a booking assistant.
-Sign up at https://resend.com — takes about 2 minutes.
+Required env vars:
+  GMAIL_USER          — your Gmail address (amols.emailid@gmail.com)
+  GMAIL_CLIENT_ID     — from Google Cloud Console OAuth credentials
+  GMAIL_CLIENT_SECRET — from Google Cloud Console OAuth credentials
+  GMAIL_REFRESH_TOKEN — generated once via tools/get_refresh_token.py
+
+To get your refresh token, run this once on your local machine:
+  cd backend && python tools/get_refresh_token.py
 """
 from __future__ import annotations
 
@@ -13,9 +19,15 @@ import base64
 import logging
 import os
 from datetime import datetime
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 
 import pytz
-import resend
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 
 from models.lead import Lead
 from models.quote import Quote, TimeSlot
@@ -23,16 +35,30 @@ from models.quote import Quote, TimeSlot
 logger = logging.getLogger(__name__)
 
 COMPANY_NAME = os.getenv("COMPANY_NAME", "CleanAI")
-COMPANY_PHONE = os.getenv("COMPANY_PHONE", "(530) 555-0100")
-COMPANY_EMAIL = os.getenv("COMPANY_EMAIL", "hello@cleanai.com")
+COMPANY_PHONE = os.getenv("COMPANY_PHONE", "(530) 508-3355")
+COMPANY_EMAIL = os.getenv("COMPANY_EMAIL", "amols.emailid@gmail.com")
 COMPANY_WEBSITE = os.getenv("COMPANY_WEBSITE", "www.cleanai.com")
 
-RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
-# FROM_EMAIL: Resend's free test address — no setup required.
-# Later you can verify your own domain in Resend and change this.
-FROM_EMAIL = os.getenv("FROM_EMAIL", "onboarding@resend.dev")
-# REPLY_TO: customer replies go here — set this to your Gmail
-REPLY_TO_EMAIL = os.getenv("REPLY_TO_EMAIL", "")
+GMAIL_USER = os.getenv("GMAIL_USER", "")
+GMAIL_CLIENT_ID = os.getenv("GMAIL_CLIENT_ID", "")
+GMAIL_CLIENT_SECRET = os.getenv("GMAIL_CLIENT_SECRET", "")
+GMAIL_REFRESH_TOKEN = os.getenv("GMAIL_REFRESH_TOKEN", "")
+
+GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
+
+
+def _get_gmail_service():
+    """Build an authenticated Gmail API service using the stored refresh token."""
+    creds = Credentials(
+        token=None,
+        refresh_token=GMAIL_REFRESH_TOKEN,
+        client_id=GMAIL_CLIENT_ID,
+        client_secret=GMAIL_CLIENT_SECRET,
+        token_uri="https://oauth2.googleapis.com/token",
+        scopes=GMAIL_SCOPES,
+    )
+    creds.refresh(Request())
+    return build("gmail", "v1", credentials=creds)
 
 
 def _fmt_slot_human(slot: TimeSlot) -> str:
@@ -165,45 +191,52 @@ def send_quote_email(
     booked_slot: TimeSlot | None = None,
 ) -> None:
     """
-    Send a quote email with attached PDF via Resend (HTTP API).
+    Send a quote email with attached PDF via the Gmail API.
 
     Raises:
         ValueError: If no email address is present on the lead.
-        RuntimeError: If RESEND_API_KEY is missing or the send fails.
+        RuntimeError: If Gmail credentials are missing or the API call fails.
     """
     if not lead.email:
         raise ValueError("Cannot send email: no email address on lead.")
 
-    if not RESEND_API_KEY:
+    missing = [k for k, v in {
+        "GMAIL_USER": GMAIL_USER,
+        "GMAIL_CLIENT_ID": GMAIL_CLIENT_ID,
+        "GMAIL_CLIENT_SECRET": GMAIL_CLIENT_SECRET,
+        "GMAIL_REFRESH_TOKEN": GMAIL_REFRESH_TOKEN,
+    }.items() if not v]
+    if missing:
         raise RuntimeError(
-            "RESEND_API_KEY is not set. Get a free key at https://resend.com"
+            f"Missing Gmail API credentials: {', '.join(missing)}. "
+            "Run backend/tools/get_refresh_token.py to set them up."
         )
-
-    resend.api_key = RESEND_API_KEY
 
     subject = _build_subject(lead, booked_slot)
     html_content = _build_html(lead, quote, available_slots, booked_slot)
 
-    # Resend expects attachment content as a base64-encoded string
-    pdf_b64 = base64.b64encode(pdf_bytes).decode("utf-8")
+    msg = MIMEMultipart("mixed")
+    msg["Subject"] = subject
+    msg["From"] = f"{COMPANY_NAME} <{GMAIL_USER}>"
+    msg["To"] = lead.email
 
-    params: resend.Emails.SendParams = {
-        "from": f"{COMPANY_NAME} <{FROM_EMAIL}>",
-        "to": [lead.email],
-        "reply_to": REPLY_TO_EMAIL or COMPANY_EMAIL,
-        "subject": subject,
-        "html": html_content,
-        "attachments": [
-            {
-                "filename": "cleanai_quote.pdf",
-                "content": pdf_b64,
-            }
-        ],
-    }
+    msg.attach(MIMEText(html_content, "html"))
+
+    pdf_part = MIMEApplication(pdf_bytes, _subtype="pdf")
+    pdf_part.add_header("Content-Disposition", "attachment", filename="cleanai_quote.pdf")
+    msg.attach(pdf_part)
+
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("utf-8")
 
     try:
-        response = resend.Emails.send(params)
-        logger.info("Quote email sent via Resend — id=%s to=%s", response.get("id"), lead.email)
+        service = _get_gmail_service()
+        result = service.users().messages().send(
+            userId="me", body={"raw": raw}
+        ).execute()
+        logger.info("Quote email sent via Gmail API — message_id=%s to=%s", result.get("id"), lead.email)
+    except HttpError as exc:
+        logger.error("Gmail API HTTP error: %s", exc)
+        raise RuntimeError(f"Gmail API error: {exc}") from exc
     except Exception as exc:
-        logger.error("Resend error: %s", exc)
+        logger.error("Gmail API error: %s", exc)
         raise RuntimeError(f"Failed to send email: {exc}") from exc
