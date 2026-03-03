@@ -28,9 +28,11 @@ COMPANY_EMAIL = os.getenv("COMPANY_EMAIL", "hello@cleanai.com")
 COMPANY_WEBSITE = os.getenv("COMPANY_WEBSITE", "www.cleanai.com")
 
 RESEND_API_KEY = os.getenv("RESEND_API_KEY", "")
-# FROM_EMAIL: use your verified Resend domain address, or the
-# Resend test address "onboarding@resend.dev" while testing.
+# FROM_EMAIL: Resend's free test address — no setup required.
+# Later you can verify your own domain in Resend and change this.
 FROM_EMAIL = os.getenv("FROM_EMAIL", "onboarding@resend.dev")
+# REPLY_TO: customer replies go here — set this to your Gmail
+REPLY_TO_EMAIL = os.getenv("REPLY_TO_EMAIL", "")
 
 
 def _fmt_slot_human(slot: TimeSlot) -> str:
@@ -188,6 +190,7 @@ def send_quote_email(
     params: resend.Emails.SendParams = {
         "from": f"{COMPANY_NAME} <{FROM_EMAIL}>",
         "to": [lead.email],
+        "reply_to": REPLY_TO_EMAIL or COMPANY_EMAIL,
         "subject": subject,
         "html": html_content,
         "attachments": [
